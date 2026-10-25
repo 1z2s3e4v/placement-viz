@@ -1,0 +1,25 @@
+# EXAMPLE config (tested end to end): `placers: no` re-uses the runs already in output/runs/ (e.g. produced by
+# ispd2015_xplace.yaml) and re-runs eval / render / page with another congestion backend. Finished GR / DR results
+# are skipped; `placeviz run` twice in a row does no work the second time.
+# EXAMPLE PATHS: replace every /path/to/... with your own.
+output: /path/to/placeviz-output/ispd2015_xplace
+benchmarks:
+  - name: mgc_pci_bridge32_a
+    lef: /path/to/ispd2015_fix/mgc_pci_bridge32_a/mgc_pci_bridge32_a.lef
+    def: /path/to/ispd2015_fix/mgc_pci_bridge32_a/mgc_pci_bridge32_a.def
+modes: [fix, mov]
+placers: no
+gr:
+  name: CU-GR
+  cmd: "ln -sf /path/to/cugr/POST9.dat /path/to/cugr/POWV9.dat . &&
+        /path/to/cugr/iccad19gr -lef {lef0} -def {def} -output {guide} -threads {threads} -rrrIters 3"
+dr:
+  name: Dr.CU
+  cmd: "/path/to/dr-cu/build/ispd19dr -lef {lef0} -def {def} -guide {guide} -output {dr_def} -threads {threads}
+        -tat 2000000000 -multiNetVerbose MIDDLE"
+  env: {DRCU_VIO_DUMP: "{route_dir}/vio.csv"}
+  vio_csv: "{route_dir}/vio.csv"
+congestion: rudy
+max_frames: 100
+jobs: 2
+threads: 8

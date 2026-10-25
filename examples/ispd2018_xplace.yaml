@@ -1,0 +1,28 @@
+# EXAMPLE config (tested end to end): ISPD 2018 ispd18_test3 (4 fixed macros), fixed-macro mode only, plain Xplace
+# through examples/adapters/xplace_example.sh, CU-GR only (`dr: no`), built-in rudy congestion.
+# The page then shows the fixed-macro column and the curves (no mixed-size, no DRV column).
+# EXAMPLE PATHS: replace every /path/to/... with your own.
+output: /path/to/placeviz-output/ispd2018_xplace
+benchmarks:
+  - name: ispd18_test3
+    lef: /path/to/ispd2018/ispd18_test3/ispd18_test3.input.lef
+    def: /path/to/ispd2018/ispd18_test3/ispd18_test3.input.def
+modes: [fix]
+placers:
+  - name: xplace
+    label: Xplace
+    cmd: "bash /path/to/placement-viz/examples/adapters/xplace_example.sh {lef0} {def} {out_def} {snap_dir} {mode} {design} ispd2018"
+    env:
+      XPLACE: /path/to/Xplace
+      XPLACE_ENV: /path/to/xplace_env.sh
+      THREADS: "{threads}"
+      XPLACE_FLAGS: ""                         # plain Xplace (no routability flags)
+gr:
+  name: CU-GR
+  cmd: "ln -sf /path/to/cugr/POST9.dat /path/to/cugr/POWV9.dat . &&
+        /path/to/cugr/iccad19gr -lef {lef0} -def {def} -output {guide} -threads {threads} -rrrIters 3"
+dr: no
+congestion: rudy
+max_frames: 100
+jobs: 1
+threads: 8

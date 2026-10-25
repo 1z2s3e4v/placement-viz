@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+# results and scratch
+outputs/
+output/
+work/
+*-work/
+tests/_out/
+*.part

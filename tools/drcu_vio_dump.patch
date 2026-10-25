@@ -1,0 +1,215 @@
+diff --git a/rsyn/src/rsyn/util/dim.h b/rsyn/src/rsyn/util/dim.h
+index 0b05b36..ff08a8c 100644
+--- a/rsyn/src/rsyn/util/dim.h
++++ b/rsyn/src/rsyn/util/dim.h
+@@ -43,7 +43,8 @@ inline std::string getDimension(const Dimension dim ) {
+ 
+ const Dimension REVERSE_DIMENSION[2] = {Y,X};
+ 
+-#define for_each_dimension(variable) for ( int variable = 0; variable < 2; variable++ )
++// (dr-cu build fix) unused macro removed: clashes with boost::geometry::detail::for_each_dimension (boost >= 1.77)
++// #define for_each_dimension(variable) for ( int variable = 0; variable < 2; variable++ )
+ 
+ // -----------------------------------------------------------------------------
+ 
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index bc0daf1..a2cd4fc 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -33,7 +33,8 @@ set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Werror=return-type")
+ ######################
+ # Check Dependencies #
+ ######################
+-set(Boost_USE_STATIC_LIBS ON)
++option(DRCU_STATIC "fully static link (needs static boost/glibc)" ON)
++set(Boost_USE_STATIC_LIBS ${DRCU_STATIC})
+ find_package(Boost COMPONENTS filesystem program_options REQUIRED)
+ 
+ ###############
+@@ -81,7 +82,11 @@ include_directories(${PATH_ISPD18})
+ #################
+ 
+ # TODO: set static under release mode only
++if(DRCU_STATIC)
+ set_target_properties(ispd19dr PROPERTIES LINK_FLAGS "-static -Wl,--whole-archive -rdynamic -lpthread -Wl,--no-whole-archive")
++else()
++set_target_properties(ispd19dr PROPERTIES LINK_FLAGS "-no-pie -rdynamic -pthread")
++endif()
+ 
+ # Threads
+ # target_link_libraries(ispd19dr ${CMAKE_THREAD_LIBS_INIT})
+diff --git a/src/db/RouteGrid.cpp b/src/db/RouteGrid.cpp
+index d4cf4f5..af19aed 100644
+--- a/src/db/RouteGrid.cpp
++++ b/src/db/RouteGrid.cpp
+@@ -1,5 +1,8 @@
+ #include "RouteGrid.h"
+ #include "PoorViaMap.h"
++#include "Stat.h"
++#include <fstream>
++#include <sstream>
+ 
+ namespace db {
+ 
+@@ -1187,6 +1190,7 @@ void RouteGrid::getAllWireSpaceVio(vector<int>& spaceVioNum) const {
+ }
+ 
+ std::pair<double, double> RouteGrid::printAllVio() const {
++    if (const char* path = vioDumpPath()) dumpAllVio(path);
+     const int width = 10;
+     auto sumVec = [](const vector<int>& vec) {
+         int sum = 0;
+@@ -1273,6 +1277,80 @@ std::pair<double, double> RouteGrid::printAllVio() const {
+     return {poorVioArea + routedShortArea, spaceVioNum};
+ }
+ 
++// DRCU_VIO_DUMP: one CSV row per violation counted by printAllVio (same loops, same helper functions),
++// plus the MIN_AREA_VIO events counted since the last routeStat.clear(). Counts that printAllVio halves
++// (wire-wire spacing, same-layer via-via) are emitted with a running carry so that the per-layer row
++// count equals floor(sum / 2) exactly; each row sits at the violating end of the segment / at the via.
++void RouteGrid::dumpAllVio(const char* path) const {
++    std::ofstream ofs(path);
++    ofs << "type,layer,xl,yl,xh,yh\n";
++    std::map<std::string, int> rows;
++    auto emit = [&](const char* type, const std::string& layer, const utils::BoxT<DBU>& b, int n = 1) {
++        for (int k = 0; k < n; ++k)
++            ofs << type << ',' << layer << ',' << b.x.low << ',' << b.y.low << ',' << b.x.high << ',' << b.y.high
++                << '\n';
++        rows[type] += n;
++    };
++    auto wireBox = [&](int l, int t, int lo, int hi) {
++        const auto& layer = layers[l];
++        lo = std::max(0, std::min(lo, layer.numCrossPoints() - 1));
++        hi = std::max(0, std::min(hi, layer.numCrossPoints() - 1));
++        BoxOnLayer box = layer.getLoc(GridBoxOnLayer(l, {t, t}, {std::min(lo, hi), std::max(lo, hi)}));
++        box.x.low -= layer.width / 2, box.y.low -= layer.width / 2, box.x.high += layer.width / 2, box.y.high += layer.width / 2;
++        return box;
++    };
++    for (int l = 0; l < getLayerNum(); ++l) {
++        const std::string& name = getLayer(l).name;
++        int spaceAcc = 0;
++        for (int t = 0; t < layers[l].numTracks(); ++t) {
++            for (const auto& intvlUsage : routedWireMap[l][t]) {
++                const auto& intvl = intvlUsage.first;
++                int usage = intvlUsage.second.size();
++                if (usage > 1) emit("short_ww", name, wireBox(l, t, first(intvl), last(intvl)), usage - 1);
++                iteratePoorWireSegments({l, t, {first(intvl), last(intvl)}},
++                                        *intvlUsage.second.begin(),
++                                        [&](const utils::IntervalT<int>& poorIntvl) {
++                                            emit("short_wf", name, wireBox(l, t, poorIntvl.low, poorIntvl.high));
++                                        });
++                for (int netIdx : intvlUsage.second) {
++                    auto vioCPs = getWireSegmentSpaceVioOnWires({l, t, {first(intvl), last(intvl)}}, netIdx);
++                    if (vioCPs.empty()) continue;
++                    int n = (spaceAcc + int(vioCPs.size())) / 2 - spaceAcc / 2;
++                    spaceAcc += vioCPs.size();
++                    auto mm = std::minmax_element(vioCPs.begin(), vioCPs.end());
++                    emit("space_ww", name, wireBox(l, t, *mm.first, *mm.second), n);
++                }
++            }
++        }
++    }
++    for (int l = 0; l + 1 < getLayerNum(); ++l) {
++        const std::string& name = getCutLayer(l).name;
++        int sameAcc = 0;
++        for (int t = 0; t < layers[l].numTracks(); ++t) {
++            for (const std::pair<int, int>& p : routedViaMap[l][t]) {
++                GridPoint via(l, t, p.first);
++                const ViaType* viaType = getViaType(via);
++                auto loc = getLoc(via);
++                auto cut = viaType->cut, bot = viaType->bot, top = viaType->top;
++                cut.ShiftBy(loc);
++                bot.ShiftBy(loc);
++                top.ShiftBy(loc);
++                int same = getViaUsageOnSameLayerVias(via, p.second, viaType);
++                emit("viavia_same", name, cut, (sameAcc + same) / 2 - sameAcc / 2);
++                sameAcc += same;
++                emit("viavia_top", name, top, getViaUsageOnTopLayerVias(via, p.second, viaType));
++                emit("viawire_bot", name, bot, getViaUsageOnBotWires(via, p.second, viaType));
++                emit("viawire_top", name, top, getViaUsageOnTopWires(via, p.second, viaType));
++                if (getViaPoorness(via, p.second) == ViaPoorness::Poor) emit("viafixed", name, cut);
++            }
++        }
++    }
++    for (const auto& lb : routeStat.minAreaVios) emit("minarea", getLayer(lb.first).name, lb.second);
++    std::ostringstream oss;
++    for (const auto& r : rows) oss << " " << r.first << "=" << r.second;
++    log() << "DRCU_VIO_DUMP " << path << " rows:" << oss.str() << std::endl;
++}
++
+ void RouteGrid::addHistCost() {
+     if (setting.dbVerbose >= +db::VerboseLevelT::MIDDLE) {
+         printlog("Add hist cost");
+diff --git a/src/db/RouteGrid.h b/src/db/RouteGrid.h
+index e3b6a8f..fbb8d28 100644
+--- a/src/db/RouteGrid.h
++++ b/src/db/RouteGrid.h
+@@ -201,6 +201,7 @@ public:
+                       vector<int>& viaTopWireVios,
+                       vector<int>& poorVia) const;
+     std::pair<double, double> printAllVio() const;
++    void dumpAllVio(const char* path) const;  // DRCU_VIO_DUMP
+ 
+     // for ripup and reroute
+     void addHistCost();
+diff --git a/src/db/Stat.cpp b/src/db/Stat.cpp
+index 7bc44d5..4ec5cf5 100644
+--- a/src/db/Stat.cpp
++++ b/src/db/Stat.cpp
+@@ -122,7 +122,10 @@ void StageRouteStat::print(const std::string& stageStr) const {
+     }
+ }
+ 
+-void RouteStat::clear() { stages.clear(); }
++void RouteStat::clear() {
++    stages.clear();
++    minAreaVios.clear();
++}
+ 
+ void RouteStat::print() const {
+     iterateEnumCountersInOrder<RouteStage, StageRouteStat>(stages, [](RouteStage stage, StageRouteStat stageStat) {
+diff --git a/src/db/Stat.h b/src/db/Stat.h
+index db4f887..1a3653c 100644
+--- a/src/db/Stat.h
++++ b/src/db/Stat.h
+@@ -90,6 +90,13 @@ public:
+     }
+     void clear();
+     void print() const;
++    // DRCU_VIO_DUMP: boxes of the MIN_AREA_VIO events counted since the last clear()
++    void addMinAreaVio(int layerIdx, const utils::BoxT<DBU>& box) {
++        routeStatusMutex.lock();
++        minAreaVios.emplace_back(layerIdx, box);
++        routeStatusMutex.unlock();
++    }
++    vector<std::pair<int, utils::BoxT<DBU>>> minAreaVios;
+ 
+ private:
+     std::unordered_map<int, StageRouteStat> stages;
+@@ -98,4 +105,10 @@ private:
+ 
+ extern RouteStat routeStat;
+ 
++// Path given by env DRCU_VIO_DUMP (per-violation CSV), or nullptr when unset/empty (default: no dump).
++inline const char* vioDumpPath() {
++    static const char* p = std::getenv("DRCU_VIO_DUMP");
++    return (p && *p) ? p : nullptr;
++}
++
+ }  // namespace db
+diff --git a/src/single_net/PostMazeRoute.cpp b/src/single_net/PostMazeRoute.cpp
+index 7d58f8c..7da7c8c 100644
+--- a/src/single_net/PostMazeRoute.cpp
++++ b/src/single_net/PostMazeRoute.cpp
+@@ -555,6 +555,11 @@ void PostMazeRoute::getExtendWireRects(const std::vector<std::shared_ptr<db::Gri
+ 
+     if (!succ && !withOtherViolations) {
+         db::routeStat.increment(db::RouteStage::POST_MAZE, +db::MiscRouteEvent::MIN_AREA_VIO, 1);
++        if (db::vioDumpPath()) {
++            db::BoxOnLayer box = layer.getLoc(db::GridBoxOnLayer(layer.idx, {trackIdx, trackIdx}, {leftCP, rightCP}));
++            box.x.low -= layer.width / 2, box.y.low -= layer.width / 2, box.x.high += layer.width / 2, box.y.high += layer.width / 2;
++            db::routeStat.addMinAreaVio(layer.idx, box);
++        }
+     }
+ 
+     // return

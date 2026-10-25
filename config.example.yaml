@@ -1,0 +1,44 @@
+# placeviz example config. EXAMPLE PATHS: replace every /path/... with your own.
+# Relative paths are resolved against this file's directory. `no` disables a stage.
+# Placeholders in cmd / env: {lef} (all LEF files, space-joined) {lef0} (first LEF) {def} (input DEF of the mode;
+# for gr / dr: the route-ready DEF) {out_def} {snap_dir} {run_dir} {mode} {design} {placer} {guide} {dr_def}
+# {route_dir} {threads}. Leave placeholders unquoted: placeviz shell-quotes the values itself.
+# Commands run through the shell with cwd = run dir (placer) or route dir (gr / dr); non-zero exits are recorded.
+
+output: /path/to/placeviz-output          # runs/, route/, web/ are written here
+
+benchmarks:                               # lef: one merged LEF or a list (tech LEF first)
+  - {name: mgc_fft_a, lef: /path/ispd2015_fix/mgc_fft_a/mgc_fft_a.lef, def: /path/ispd2015_fix/mgc_fft_a/mgc_fft_a.def}
+  - name: mgc_pci_bridge32_a
+    lef: [/path/ispd2015_fix/mgc_pci_bridge32_a/tech.lef, /path/ispd2015_fix/mgc_pci_bridge32_a/cells.lef]
+    def: /path/ispd2015_fix/mgc_pci_bridge32_a/mgc_pci_bridge32_a.def
+
+modes: [fix, mov]                         # mov: FIXED macros (taller than a row) become PLACED; I/O pins stay
+
+placers:                                  # rows of the page, in this order; or `placers: no` to reuse output/runs
+  - name: myplacer                        # writes {out_def}; optional snapshots in {snap_dir} (docs/SNAPSHOT_FORMAT.md)
+    cmd: "python /path/to/run_myplacer.py --lef {lef} --def {def} --out {out_def} --snap {snap_dir} --mode {mode}"
+    env: {OMP_NUM_THREADS: "{threads}"}
+    label: My placer                      # optional row label on the page (default: name)
+  - name: oldplacer                       # no cmd: use the runs already in output/runs/oldplacer/
+
+gr:                                       # or: no
+  name: cugr
+  cmd: "ln -sf /path/to/cugr/POST9.dat /path/to/cugr/POWV9.dat . &&
+        /path/to/cugr/iccad19gr -lef {lef0} -def {def} -output {guide} -threads {threads} -rrrIters 3"
+
+dr:                                       # or: no
+  name: drcu
+  cmd: "/path/to/dr-cu/build/ispd19dr -lef {lef0} -def {def} -guide {guide} -output {dr_def} -threads {threads}
+        -tat 2000000000 -multiNetVerbose MIDDLE"
+  env: {DRCU_VIO_DUMP: "{route_dir}/vio.csv"}   # violation boxes (tools/drcu_vio_dump.patch)
+  vio_csv: "{route_dir}/vio.csv"                # type,layer,xl,yl,xh,yh rows for the DRV map
+
+congestion: rudy                          # rudy (built-in estimate) | {backend: ggr, xplace: /path/to/Xplace} | no
+                                          # rudy options: {backend: rudy, rows_per_gcell: 4, max_gcells: 256}
+                                          # ggr options: gpu: 0, rrr: 0 (maze RRR iters per frame), rrr_final: 1
+max_frames: 100                           # frames evaluated per run (stage boundaries + evenly spaced GP frames)
+jobs: 2                                   # parallel units per stage
+threads: 8                                # {threads}
+gifs: no                                  # yes: also write web/gifs/<placer>/<design>_<mode>/*.gif (slow)
+# title: My experiment                    # optional page title

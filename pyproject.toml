@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "placeviz"
+version = "0.1.0"
+description = "Run placers, global and detailed routers on LEF/DEF benchmarks and visualize every placement snapshot"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = ["numpy", "pillow", "matplotlib", "pyyaml"]
+
+[project.scripts]
+placeviz = "placeviz.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["placeviz*"]
+
+[tool.setuptools.package-data]
+placeviz = ["web/*.html", "web/*.js"]
